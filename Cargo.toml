@@ -1,0 +1,15 @@
+[package]
+name = "bnuuy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rayon = "1.6"
+nalgebra = "0.31"
+ndarray = { version = "0.15", features = ["rayon"] }
+fastrand = "1.8"
+
+[dependencies.macroquad]
+version = "0.3"
+default-features = false
+features = []
