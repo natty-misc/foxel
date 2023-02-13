@@ -1,10 +1,10 @@
-# bnuuy
-Experimental CPU raytracer writter in Rust. Heavy work in progress. Unoptimized.
+# foxel
+Forward raymarcher written in Rust. Work in progress.
 
-## Naming
 
-The goal of this project is to render the Stanford bunny with
-nice-looking PBR effects.
+## Goals
+
+The goal of this project is to accurately render a black hole.
 
 ## Support
 
@@ -12,7 +12,7 @@ nice-looking PBR effects.
 
 ## Building
 
-WARNING: *VERY slow in debug mode.*
+WARNING: *EXTREMELY slow in debug mode.*
 
 ```shell
 cargo build

@@ -1,285 +1,192 @@
-use std::{fmt::Debug, iter::repeat_with};
+use std::sync::Arc;
 
-use fastrand::Rng;
-use macroquad::{
-    color::*,
-    texture::{draw_texture, Image, Texture2D},
-    time,
-    window::*,
+use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer};
+use vulkano::command_buffer::allocator::{CommandBufferAllocator, StandardCommandBufferAllocator};
+use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage};
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+use vulkano::descriptor_set::{
+    DescriptorSetsCollection, PersistentDescriptorSet, WriteDescriptorSet,
 };
-use nalgebra::{Reflection, Vector3, Vector4, Rotation3};
-use ndarray::Array2;
-use rayon::prelude::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use vulkano::device::physical::PhysicalDeviceType;
+use vulkano::device::{Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo};
+use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::memory::allocator::StandardMemoryAllocator;
+use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint};
+use vulkano::sync::GpuFuture;
+use vulkano::VulkanLibrary;
 
-trait Geometry: Send + Sync + Debug {
-    fn intersect(&self, ray: &Ray) -> Option<(f32, Vector3<f32>)>;
-    fn material(&self) -> &BMat;
-}
+use crate::renderer::{Photon, Screen, State};
+use crate::world::Intersection;
 
-#[derive(Debug)]
-struct BMat {
-    albedo: Vector4<f32>,
-    specular: f32,
-    roughness: f32,
-    emission: Vector3<f32>,
-}
+mod renderer;
+mod shader;
+mod world;
 
-impl Default for BMat {
-    fn default() -> Self {
-        BMat {
-            albedo: Vector4::new(0.0, 0.0, 0.0, 1.0),
-            specular: 0.0,
-            roughness: 0.25,
-            emission: Vector3::new(0.0, 0.0, 0.0),
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Sphere {
-    material: BMat,
-    center: Vector3<f32>,
-    radius: f32,
-}
-
-impl Geometry for Sphere {
-    fn intersect(&self, ray: &Ray) -> Option<(f32, Vector3<f32>)> {
-        let oc = ray.pos - self.center;
-        let a = 1.0;
-        let b = 2.0 * oc.dot(&ray.dir);
-        let c = oc.dot(&oc) - self.radius * self.radius;
-        let discriminant = b * b - 4.0 * a * c;
-        if discriminant < 0.0 {
-            return None;
-        }
-        let t = (-b - discriminant.sqrt()) / (2.0 * a);
-        if t < 0.0 {
-            return None;
-        }
-        Some((t, (oc + t * ray.dir).normalize()))
-    }
-
-    fn material(&self) -> &BMat {
-        &self.material
-    }
-}
-
-#[derive(Debug)]
-struct Plane {
-    material: BMat,
-    normal: Vector3<f32>,
-    offset: f32,
-}
-
-impl Geometry for Plane {
-    fn intersect(&self, ray: &Ray) -> Option<(f32, Vector3<f32>)> {
-        let denom = (-self.normal).dot(&ray.dir);
-        if denom > 0.0001 {
-            let t = -((-self.normal).dot(&ray.pos) + self.offset) / denom;
-            if t > -0.001 {
-                return Some((t, self.normal));
-            }
-        }
-
-        None
-    }
-
-    fn material(&self) -> &BMat {
-        &self.material
-    }
-}
-
-#[derive(Debug)]
-struct Ray {
-    pos: Vector3<f32>,
-    dir: Vector3<f32>,
-}
-
-struct World {
-    geometry: Vec<Box<dyn Geometry>>,
-}
-
-fn create_world() -> World {
-    let geometry: Vec<Box<dyn Geometry>> = vec![
-        Box::new(Sphere {
-            center: Vector3::new(0.0, 1.2, 0.0),
-            radius: 2.0,
-            material: BMat {
-                albedo: Vector4::new(1.0, 0.0, 0.5, 1.0),
-                specular: 0.9,
-                ..Default::default()
-            },
-        }),
-        Box::new(Plane {
-            normal: Vector3::new(0.0, 1.0, 0.0),
-            offset: -1.0,
-            material: BMat {
-                albedo: Vector4::new(0.5, 0.5, 0.5, 1.0),
-                specular: 0.9,
-                ..Default::default()
-            },
-        }),
-        Box::new(Sphere {
-            center: Vector3::new(4.0, 3.0, 4.0),
-            radius: 0.1,
-            material: BMat {
-                emission: Vector3::new(10.0, 10.0, 10.0),
-                ..Default::default()
-            },
-        }),
-    ];
-
-    World { geometry }
-}
-
-fn emit_ray(
-    rng: &Rng,
-    ray: &Ray,
-    world: &World,
-    mix_fac: f32,
-    col: Vector4<f32>,
-    iter: usize,
-) -> Vector4<f32> {
-    const BOUNCES: usize = 10;
-
-    if iter >= BOUNCES {
-        return col;
-    }
-
-    let hit = world
-        .geometry
-        .iter()
-        .filter_map(|g| Some((g, g.intersect(ray)?)))
-        .min_by(|(_, (a, _)), (_, (b, _))| a.partial_cmp(b).unwrap());
-
-    if let Some((geo, (t, normal))) = hit {
-        let mat = geo.material();
-
-        let ray_n = &Ray {
-            pos: ray.pos + ray.dir * t,
-            dir: ray.dir - 2.0 * normal.dot(&ray.dir) * normal,
-        };
-
-        let new_col = mat.albedo * (1.0 - mat.specular)
-            + mat.emission.to_homogeneous()
-            + emit_ray(rng, ray_n, world, mix_fac * mat.specular, col, iter + 1) * mat.specular;
-
-        col * (1.0 - mix_fac) + mix_fac * new_col
-    } else {
-        if true {
-            return Vector4::new(iter as f32 / BOUNCES as f32, 0.0, 0.0, 1.0);
-        }
-        col * (1.0 - mix_fac) + Vector4::new(0.0, 0.0, 0.0, 1.0) * mix_fac
-    }
-}
-
-#[macroquad::main("Bnuuy")]
+#[macroquad::main("Foxel")]
 async fn main() {
-    let w = screen_width() as usize;
-    let h = screen_height() as usize;
+    let library = VulkanLibrary::new().expect("no local Vulkan library/DLL");
+    let instance =
+        Instance::new(library, InstanceCreateInfo::default()).expect("failed to create instance");
 
-    let mut image = Image::gen_image_color(w as u16, h as u16, WHITE);
+    let device_extensions = DeviceExtensions {
+        khr_storage_buffer_storage_class: true,
+        ..DeviceExtensions::empty()
+    };
 
-    let texture = Texture2D::from_image(&image);
+    let (physical, queue_family_index) = instance
+        .enumerate_physical_devices()
+        .unwrap()
+        .filter(|p| p.supported_extensions().contains(&device_extensions))
+        .filter_map(|p| {
+            p.queue_family_properties()
+                .iter()
+                .position(|q| q.queue_flags.compute)
+                .map(|i| (p, i as u32))
+        })
+        .min_by_key(|(p, _)| match p.properties().device_type {
+            PhysicalDeviceType::DiscreteGpu => 0,
+            PhysicalDeviceType::IntegratedGpu => 1,
+            PhysicalDeviceType::VirtualGpu => 2,
+            PhysicalDeviceType::Cpu => 3,
+            PhysicalDeviceType::Other => 4,
+            _ => 5,
+        })
+        .unwrap();
 
-    const CHUNK_SIZE: usize = 64;
+    println!("Vulkan API version: {}", physical.api_version());
+    println!("Device name: {}", physical.properties().device_name);
 
-    let mut color_buf = Array2::<Vector4<f32>>::default((w, h));
-    let mut chunks = color_buf
-        .exact_chunks_mut((CHUNK_SIZE, CHUNK_SIZE))
-        .into_iter()
+    let (device, mut queues) = Device::new(
+        physical,
+        DeviceCreateInfo {
+            queue_create_infos: vec![QueueCreateInfo {
+                queue_family_index,
+                ..Default::default()
+            }],
+            enabled_extensions: DeviceExtensions {
+                khr_storage_buffer_storage_class: true,
+                ..DeviceExtensions::empty()
+            },
+            ..Default::default()
+        },
+    )
+    .expect("failed to create device");
+
+    let queue = queues.next().unwrap();
+
+    let memory_allocator = StandardMemoryAllocator::new_default(device.clone());
+    let descriptor_set_allocator = StandardDescriptorSetAllocator::new(device.clone());
+    let command_buffer_allocator =
+        StandardCommandBufferAllocator::new(device.clone(), Default::default());
+
+    let data_initial = std::iter::repeat(Default::default())
+        .take(1024 * 1024 * 4)
         .collect::<Vec<_>>();
+    let data_buffer = CpuAccessibleBuffer::from_iter(
+        &memory_allocator,
+        BufferUsage {
+            storage_buffer: true,
+            ..Default::default()
+        },
+        false,
+        data_initial,
+    )
+    .expect("failed to create buffer");
 
-    let mut samp_buf = Array2::<f32>::zeros((w, h));
-    let mut samples = samp_buf
-        .exact_chunks_mut((CHUNK_SIZE, CHUNK_SIZE))
-        .into_iter()
-        .collect::<Vec<_>>();
+    let shader = shader::marcher::load(device.clone()).expect("failed to create shader module");
 
-    let chunks_x = w / CHUNK_SIZE;
+    let compute_pipeline = ComputePipeline::new(
+        device.clone(),
+        shader.entry_point("main").unwrap(),
+        &(),
+        None,
+        |_| {},
+    )
+    .expect("failed to create compute pipeline");
 
-    let geometry = create_world();
+    let layout = compute_pipeline.layout().set_layouts().get(0).unwrap();
+    let set = PersistentDescriptorSet::new(
+        &descriptor_set_allocator,
+        layout.clone(),
+        [WriteDescriptorSet::buffer(0, data_buffer.clone())],
+    )
+    .unwrap();
+
+    let mut state = State::new();
+
+    let mut rays = state.voxels.gen_rays().cycle();
 
     loop {
-        let t = time::get_time() as f32;
+        /*
+        let rays = state
+            .gen_rays()
+            .map(|ray| state.world.raymarch(ray))
+            .filter(|ins| ins.intersection != 0)
+            .collect::<Vec<_>>();
+         */
 
-        let rsin = (t / 4.0).sin();
-        let rcos = (t / 4.0).cos();
+        compute(
+            &queue,
+            &device,
+            &compute_pipeline,
+            set.clone(),
+            &command_buffer_allocator,
+            &data_buffer,
+            &mut state.screen,
+            &mut rays,
+        );
 
-        const N_SAMPLES: usize = 100000;
+        // state.screen.blend_rays(rays.iter());
 
-        chunks.par_iter_mut().for_each(|x| x.fill(Vector4::zeros()));
-
-        samples.par_iter_mut().for_each(|x| {
-            x.fill(1.0);
-        });
-
-        chunks
-            .par_iter_mut()
-            .zip(samples.par_iter_mut())
-            .enumerate()
-            .for_each(|(i, (c, s))| {
-                let chunk_x_off = (i % chunks_x * CHUNK_SIZE) as f32;
-                let chunk_y_off = (i / chunks_x * CHUNK_SIZE) as f32;
-
-                let rng = fastrand::Rng::new();
-                let xs = repeat_with(|| rng.f32()).take(N_SAMPLES);
-                let ys = repeat_with(|| rng.f32()).take(N_SAMPLES);
-                xs.zip(ys).for_each(|(cx, cy)| {
-                    let ccx = cx * (CHUNK_SIZE as f32 - 0.0002) - 0.4999;
-                    let ccy = cy * (CHUNK_SIZE as f32 - 0.0002) - 0.4999;
-                    let x = chunk_x_off + ccx;
-                    let y = chunk_y_off + ccy;
-
-                    let cx = (x - (w as f32 / 2.0)) / (h as f32);
-                    let cy = (1.0 - y / h as f32) - 0.5;
-                    let zd = 1.2;
-
-                    let ray_dd = Vector3::new(cx, cy, zd).normalize();
-                    let rddc = ray_dd * rcos;
-                    let rdds = ray_dd * rsin;
-
-                    let pos = Vector3::new(15.0 * rsin, 0.5, 15.0 * -rcos);
-                    let dir = Vector3::new(rddc.x - rdds.z, ray_dd.y, rdds.x + rddc.z).normalize();
-
-                    let ray = &Ray { pos, dir };
-
-                    let ix = ccx.round() as usize;
-                    let iy = ccy.round() as usize;
-
-                    let mix_fac = s.get_mut((iy, ix)).unwrap();
-                    let mix = 1.0 / *mix_fac;
-                    let col = c.get_mut((iy, ix)).unwrap();
-                    *col =
-                        mix * emit_ray(
-                            &rng,
-                            ray,
-                            &geometry,
-                            1.0,
-                            Vector4::new(0.0, 0.0, 0.0, 1.0),
-                            0,
-                        ) + (1.0 - mix) * *col;
-                    *mix_fac += 1.0;
-                });
-            });
-
-        chunks.iter().enumerate().for_each(|(i, c)| {
-            let chunk_x_off = i % chunks_x * CHUNK_SIZE;
-            let chunk_y_off = i / chunks_x * CHUNK_SIZE;
-
-            for (i, col) in c.iter().enumerate() {
-                image.set_pixel(
-                    (chunk_x_off + (i % CHUNK_SIZE)) as u32,
-                    (chunk_y_off + (i / CHUNK_SIZE)) as u32,
-                    col.data.0[0].into(),
-                );
-            }
-        });
-
-        texture.update(&image);
-
-        draw_texture(texture, 0., 0., WHITE);
-
-        next_frame().await
+        state.screen.present().await;
     }
+}
+
+fn compute(
+    queue: &Arc<Queue>,
+    device: &Arc<Device>,
+    compute_pipeline: &Arc<ComputePipeline>,
+    set: impl DescriptorSetsCollection + Clone,
+    command_buffer_allocator: &impl CommandBufferAllocator,
+    data_buffer: &Arc<CpuAccessibleBuffer<[Intersection]>>,
+    screen: &mut Screen,
+    data: &mut impl Iterator<Item = Intersection>,
+) {
+    {
+        let content = &mut (*data_buffer.write().unwrap());
+        for (src, dest) in data.take(1024 * 1024 * 4).zip(content.iter_mut()) {
+            *dest = src;
+        }
+    }
+
+    let mut builder = AutoCommandBufferBuilder::primary(
+        command_buffer_allocator,
+        queue.queue_family_index(),
+        CommandBufferUsage::OneTimeSubmit,
+    )
+    .unwrap();
+
+    builder
+        .bind_pipeline_compute(compute_pipeline.clone())
+        .bind_descriptor_sets(
+            PipelineBindPoint::Compute,
+            compute_pipeline.layout().clone(),
+            0,
+            set,
+        )
+        .dispatch([4096, 1, 1])
+        .unwrap();
+
+    let command_buffer = builder.build().unwrap();
+
+    let future = vulkano::sync::now(device.clone())
+        .then_execute(queue.clone(), command_buffer)
+        .unwrap()
+        .then_signal_fence_and_flush()
+        .unwrap();
+
+    future.wait(None).unwrap();
+
+    let content = data_buffer.read().unwrap();
+    screen.blend_rays(content.iter());
 }

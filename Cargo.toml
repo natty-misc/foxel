@@ -1,15 +1,14 @@
 [package]
-name = "bnuuy"
+name = "foxel"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-rayon = "1.6"
-nalgebra = "0.31"
+bytemuck = "1.13"
+nalgebra = { version = "0.32", features = ["bytemuck"] }
 ndarray = { version = "0.15", features = ["rayon"] }
 fastrand = "1.8"
-
-[dependencies.macroquad]
-version = "0.3"
-default-features = false
-features = []
+vulkano = "0.32"
+vulkano-shaders = "0.32"
+rayon = "1.6"
+macroquad = { version = "0.3", default-features = false, features = [] }
