@@ -235,27 +235,28 @@ impl State {
 
 impl Voxels {
     pub fn gen_rays(&self) -> impl Iterator<Item = Intersection> + Clone + '_ {
-        self.0.iter().flat_map(|(v, pos)| {
-            let n = v.data.round() as u32;
+        std::iter::once_with(|| {
+            let pos = Vector3::new(
+                (fastrand::f32() * 1.0 - 0.5) * VOX_TERR_X,
+                (fastrand::f32() * 1.0 - 0.5) * VOX_TERR_Y,
+                (fastrand::f32() * 1.0 - 0.5) * VOX_TERR_Z,
+            );
 
-            (0..n).map(move |_| {
-                let x = fastrand::f32() * 2.0 - 1.0;
-                let y = fastrand::f32() * 2.0 - 1.0;
-                let z = fastrand::f32() * 2.0 - 1.0;
+            let dir = Vector3::new(
+                fastrand::f32() * 2.0 - 1.0,
+                fastrand::f32() * 2.0 - 1.0,
+                fastrand::f32() * 2.0 - 1.0,
+            );
 
-                let dir = Vector3::new(x, y, z);
-
-                Intersection {
-                    photon: Photon {
-                        pos: *pos,
-                        dir: dir.normalize(),
-                        wavelength: 445.0
-                            + 100.0 * pos.metric_distance(&Vector3::new(0.0, 0.0, 0.0)),
-                        ..Default::default()
-                    },
+            Intersection {
+                photon: Photon {
+                    pos,
+                    dir: dir.normalize(),
+                    wavelength: 580.0,
                     ..Default::default()
-                }
-            })
+                },
+                ..Default::default()
+            }
         })
     }
 }
